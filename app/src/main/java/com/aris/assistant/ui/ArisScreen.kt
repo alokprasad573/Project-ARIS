@@ -62,9 +62,7 @@ fun ArisScreen(
     onTextChanged: (String) -> Unit,
     onSendVerifiedText: (String) -> Unit,
     onListenAgain: () -> Unit,
-    onReset: () -> Unit,
-    onSpeakResponse: () -> Unit,
-    onTestGreeting: () -> Unit
+    onReset: () -> Unit
 ) {
     val animatedScale by animateFloatAsState(
         targetValue = if (mode == ArisUiMode.LISTENING) 1f + (rmsLevel * 0.45f) else 1f,
@@ -168,8 +166,7 @@ fun ArisScreen(
                 when (mode) {
                     ArisUiMode.READY -> {
                         ReadyControls(
-                            onStartListening = onStartListening,
-                            onTestGreeting = onTestGreeting
+                            onStartListening = onStartListening
                         )
                     }
 
@@ -199,7 +196,6 @@ fun ArisScreen(
                         RespondedControls(
                             prompt = recognizedText,
                             response = responseText,
-                            onSpeak = onSpeakResponse,
                             onAskAnother = onStartListening,
                             onReset = onReset
                         )
@@ -212,8 +208,7 @@ fun ArisScreen(
 
 @Composable
 private fun ReadyControls(
-    onStartListening: () -> Unit,
-    onTestGreeting: () -> Unit
+    onStartListening: () -> Unit
 ) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -231,7 +226,7 @@ private fun ReadyControls(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = "Tap listen and speak your request. You can verify your speech before sending.",
+                    text = "Tap listen and speak your request. ARIS will process your speech and respond with voice.",
                     style = MaterialTheme.typography.bodyMedium,
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -249,18 +244,6 @@ private fun ReadyControls(
             shape = RoundedCornerShape(14.dp)
         ) {
             Text(text = "🎙️ Start Listening", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        OutlinedButton(
-            onClick = onTestGreeting,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(48.dp),
-            shape = RoundedCornerShape(14.dp)
-        ) {
-            Text(text = "🤖 Test Aris Voice", fontSize = 14.sp)
         }
     }
 }
@@ -308,7 +291,6 @@ private fun ListeningControls(
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        // Done Speaking button allows immediate transition without waiting for silence timeout
         Button(
             onClick = onDoneSpeaking,
             modifier = Modifier
@@ -445,7 +427,7 @@ private fun ProcessingView() {
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(32.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+                horizontalAlignment = Alignment.CenterHorizontally
         ) {
             CircularProgressIndicator(
                 modifier = Modifier.size(48.dp),
@@ -472,7 +454,6 @@ private fun ProcessingView() {
 private fun RespondedControls(
     prompt: String,
     response: String,
-    onSpeak: () -> Unit,
     onAskAnother: () -> Unit,
     onReset: () -> Unit
 ) {
@@ -507,7 +488,7 @@ private fun RespondedControls(
                 Spacer(modifier = Modifier.height(12.dp))
 
                 Text(
-                    text = "ARIS Response:",
+                    text = "ARIS Response (Speaking...):",
                     style = MaterialTheme.typography.labelSmall,
                     color = Color(0xFF00C853),
                     fontWeight = FontWeight.Bold
@@ -523,32 +504,17 @@ private fun RespondedControls(
 
         Spacer(modifier = Modifier.height(20.dp))
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        Button(
+            onClick = onAskAnother,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(52.dp),
+            shape = RoundedCornerShape(14.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Color(0xFF00A86B)
+            )
         ) {
-            Button(
-                onClick = onSpeak,
-                modifier = Modifier
-                    .weight(1f)
-                    .height(50.dp),
-                shape = RoundedCornerShape(14.dp)
-            ) {
-                Text(text = "🔊 Speak Answer")
-            }
-
-            Button(
-                onClick = onAskAnother,
-                modifier = Modifier
-                    .weight(1f)
-                    .height(50.dp),
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFF00A86B)
-                )
-            ) {
-                Text(text = "🎙️ Ask Another")
-            }
+            Text(text = "🎙️ Ask Another Question", fontSize = 16.sp, fontWeight = FontWeight.Bold)
         }
 
         Spacer(modifier = Modifier.height(8.dp))

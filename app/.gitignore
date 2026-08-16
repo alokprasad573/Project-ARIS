@@ -3,4 +3,4 @@
 *.bin
 *.tflite
 *.onnx
-app/src/main/assets/
+/app/src/main/assets/*.litertlm

@@ -49,12 +49,12 @@ class MainActivity : ComponentActivity(), ArisSpeechRecognizer.Listener {
         speechRecognizer = ArisSpeechRecognizer(this, this)
         arisBrain = ArisBrain(applicationContext)
 
-        // Pre-initialize brain in background so first prompt responds swiftly
+        // Pre-warm AI brain in background for fast on-device inference
         lifecycleScope.launch(Dispatchers.IO) {
             try {
                 arisBrain.initialize()
             } catch (e: Exception) {
-                // Ignore initial warmup error if any
+                // Warmup fallback
             }
         }
 
@@ -102,14 +102,6 @@ class MainActivity : ComponentActivity(), ArisSpeechRecognizer.Listener {
                         responseText = ""
                         speechStatus = "Ready"
                         rmsLevel = 0f
-                    },
-                    onSpeakResponse = {
-                        if (responseText.isNotBlank()) {
-                            arisTTS.speak(responseText)
-                        }
-                    },
-                    onTestGreeting = {
-                        arisTTS.speak("Hi, I am Aris, your autonomous assistant. How may I help you today?")
                     }
                 )
             }
@@ -146,14 +138,22 @@ class MainActivity : ComponentActivity(), ArisSpeechRecognizer.Listener {
 
         lifecycleScope.launch {
             try {
+                // Pipeline: ArisBrain -> Gemma -> Response
                 val result = withContext(Dispatchers.IO) {
                     arisBrain.process(prompt)
                 }
+
                 responseText = result
                 uiMode = ArisUiMode.RESPONDED
-                speechStatus = "Response generated"
+                speechStatus = "Responding via voice..."
+
+                // Pipeline: Response -> ArisTTS -> Fish Audio
+                if (result.isNotBlank()) {
+                    arisTTS.speak(result)
+                }
             } catch (e: Exception) {
-                responseText = "Error processing request: ${e.message ?: "Unknown error"}"
+                val errorMsg = "Error processing request: ${e.message ?: "Unknown error"}"
+                responseText = errorMsg
                 uiMode = ArisUiMode.RESPONDED
                 speechStatus = "Brain error"
             }
