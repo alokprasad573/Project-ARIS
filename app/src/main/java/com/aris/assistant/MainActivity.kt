@@ -75,7 +75,7 @@ class MainActivity : ComponentActivity(), ArisSpeechRecognizer.Listener {
                     stopListening()
                 },
                 onSpeak = {
-                    arisTTS.speak("Greetings. I am Aris, a virtual artificial intelligence. All systems are fully operational. How may i assist you today?")
+                    arisTTS.speak("Hi, I am Aris, a virtual artificial intelligence. How may i assist you today?")
                 }
             )
         }
