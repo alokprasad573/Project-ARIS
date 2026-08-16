@@ -22,5 +22,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "JARVIS"
+rootProject.name = "ARIS"
 include(":app")

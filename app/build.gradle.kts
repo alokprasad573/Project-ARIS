@@ -16,22 +16,26 @@ val localProperties = Properties().apply {
 }
 
 android {
-    namespace = "com.jarvis.assistant"
+    namespace = "com.aris.assistant"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "com.jarvis.assistant"
+        applicationId = "com.aris.assistant"
         minSdk = 29
         targetSdk = 37
         versionCode = 1
         versionName = "1.0"
 
-        val apiKey = localProperties.getProperty("JARVIS_API_KEY")?: ""
-        val modelTTS = localProperties.getProperty("JARVIS_MODEL_TTS")?: ""
+        val apiKey = localProperties.getProperty("ARIS_API_KEY")
+            ?: localProperties.getProperty("JARVIS_API_KEY")
+            ?: ""
+        val modelTTS = localProperties.getProperty("ARIS_MODEL_TTS")
+            ?: localProperties.getProperty("JARVIS_MODEL_TTS")
+            ?: ""
 
 
-        buildConfigField("String", "JARVIS_API_KEY", "\"$apiKey\"")
-        buildConfigField("String", "JARVIS_MODEL_TTS", "\"$modelTTS\"")
+        buildConfigField("String", "ARIS_API_KEY", "\"$apiKey\"")
+        buildConfigField("String", "ARIS_MODEL_TTS", "\"$modelTTS\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
