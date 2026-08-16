@@ -1,1 +1,6 @@
 /build
+*.litertlm
+*.bin
+*.tflite
+*.onnx
+app/src/main/assets/

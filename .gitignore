@@ -13,3 +13,10 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# AI Models and large assets
+*.litertlm
+*.bin
+*.tflite
+*.onnx
+app/src/main/assets/

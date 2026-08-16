@@ -6,84 +6,118 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
-import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-
-import com.aris.assistant.tts.ArisTTS
+import androidx.lifecycle.lifecycleScope
+import com.aris.assistant.brain.ArisBrain
 import com.aris.assistant.speech.ArisSpeechRecognizer
-
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.draw.scale
+import com.aris.assistant.tts.ArisTTS
+import com.aris.assistant.ui.ArisScreen
+import com.aris.assistant.ui.ArisUiMode
+import com.aris.assistant.ui.theme.ARISTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity(), ArisSpeechRecognizer.Listener {
     private lateinit var arisTTS: ArisTTS
-
     private lateinit var speechRecognizer: ArisSpeechRecognizer
+    private lateinit var arisBrain: ArisBrain
 
+    private var uiMode by mutableStateOf(ArisUiMode.READY)
     private var recognizedText by mutableStateOf("")
-    private var speechStatus by mutableStateOf("Ready")
-    private var isListening by mutableStateOf(false)
+    private var responseText by mutableStateOf("")
+    private var speechStatus by mutableStateOf("Ready to assist")
     private var rmsLevel by mutableStateOf(0f)
 
-    private val microphonePermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) {
-            startListening()
-        } else {
-            isListening = false
-            speechStatus = "Microphone permission denied"
+    private val microphonePermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) {
+                startListening()
+            } else {
+                uiMode = ArisUiMode.READY
+                speechStatus = "Microphone permission is required."
+            }
         }
-    }
 
     override fun onCreate(savedInstance: Bundle?) {
         super.onCreate(savedInstance)
 
-        // Existing M0 Fish Audio TTS
         arisTTS = ArisTTS(this)
-
         speechRecognizer = ArisSpeechRecognizer(this, this)
+        arisBrain = ArisBrain(applicationContext)
+
+        // Pre-initialize brain in background so first prompt responds swiftly
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                arisBrain.initialize()
+            } catch (e: Exception) {
+                // Ignore initial warmup error if any
+            }
+        }
 
         setContent {
-            ArisScreen(
-                recognizedText = recognizedText,
-                speechStatus = speechStatus,
-                isListening = isListening,
-                rmsLevel = rmsLevel,
-                onListen = {
-                    requestMicrophonePermission()
-                },
-                onStop = {
-                    stopListening()
-                },
-                onSpeak = {
-                    arisTTS.speak("Hi, I am Aris, a virtual artificial intelligence. How may i assist you today?")
-                }
-            )
+            ARISTheme {
+                ArisScreen(
+                    mode = uiMode,
+                    recognizedText = recognizedText,
+                    responseText = responseText,
+                    speechStatus = speechStatus,
+                    rmsLevel = rmsLevel,
+                    onStartListening = {
+                        requestMicrophonePermission()
+                    },
+                    onDoneSpeaking = {
+                        speechRecognizer.stopListening()
+                        if (recognizedText.isNotBlank()) {
+                            uiMode = ArisUiMode.VERIFYING
+                            speechStatus = "Please verify your speech"
+                        }
+                    },
+                    onPauseListening = {
+                        speechRecognizer.cancel()
+                        if (recognizedText.isNotBlank()) {
+                            uiMode = ArisUiMode.VERIFYING
+                            speechStatus = "Speech paused. Verify or re-listen."
+                        } else {
+                            uiMode = ArisUiMode.READY
+                            speechStatus = "Ready"
+                        }
+                    },
+                    onTextChanged = { newText ->
+                        recognizedText = newText
+                    },
+                    onSendVerifiedText = { textToSend ->
+                        sendTextToBrain(textToSend)
+                    },
+                    onListenAgain = {
+                        requestMicrophonePermission()
+                    },
+                    onReset = {
+                        speechRecognizer.cancel()
+                        uiMode = ArisUiMode.READY
+                        recognizedText = ""
+                        responseText = ""
+                        speechStatus = "Ready"
+                        rmsLevel = 0f
+                    },
+                    onSpeakResponse = {
+                        if (responseText.isNotBlank()) {
+                            arisTTS.speak(responseText)
+                        }
+                    },
+                    onTestGreeting = {
+                        arisTTS.speak("Hi, I am Aris, your autonomous assistant. How may I help you today?")
+                    }
+                )
+            }
         }
     }
 
     private fun requestMicrophonePermission() {
         val permission = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-
         if (permission == PackageManager.PERMISSION_GRANTED) {
             startListening()
         } else {
@@ -92,45 +126,55 @@ class MainActivity : ComponentActivity(), ArisSpeechRecognizer.Listener {
     }
 
     private fun startListening() {
-        if (isListening) {
-            return
-        }
-
         recognizedText = ""
-        speechStatus = "Starting microphone..."
-        isListening = true
+        speechStatus = "Listening... speak now"
+        uiMode = ArisUiMode.LISTENING
         rmsLevel = 0f
         speechRecognizer.startListening()
     }
 
-    private fun stopListening() {
-        if (!isListening) {
+    private fun sendTextToBrain(input: String) {
+        val prompt = input.trim()
+        if (prompt.isBlank()) {
+            speechStatus = "Cannot send empty request"
             return
         }
 
-        isListening = false
-        speechStatus = "Stopping..."
-        rmsLevel = 0f
-        speechRecognizer.stopListening()
+        recognizedText = prompt
+        uiMode = ArisUiMode.PROCESSING
+        speechStatus = "ARIS is thinking..."
+
+        lifecycleScope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    arisBrain.process(prompt)
+                }
+                responseText = result
+                uiMode = ArisUiMode.RESPONDED
+                speechStatus = "Response generated"
+            } catch (e: Exception) {
+                responseText = "Error processing request: ${e.message ?: "Unknown error"}"
+                uiMode = ArisUiMode.RESPONDED
+                speechStatus = "Brain error"
+            }
+        }
     }
 
-    // ---------------------
-    // SpeechRecognizer callbacks
-    // ---------------------
+    // -------------------------------------------------------------
+    // ArisSpeechRecognizer.Listener Callbacks
+    // -------------------------------------------------------------
 
     override fun onReady() {
-        isListening = true
+        uiMode = ArisUiMode.LISTENING
         speechStatus = "Listening..."
     }
 
     override fun onListening() {
-        isListening = true
+        uiMode = ArisUiMode.LISTENING
         speechStatus = "Listening..."
     }
 
     override fun onRmsChanged(rmsdB: Float) {
-        // rmsdB typically ranges from -2 dB (silence) to ~10+ dB (loud speech)
-        // Normalize to 0.0 .. 1.0 range
         val normalized = (rmsdB.coerceAtLeast(0f) / 10f).coerceIn(0f, 1f)
         rmsLevel = normalized
     }
@@ -141,113 +185,44 @@ class MainActivity : ComponentActivity(), ArisSpeechRecognizer.Listener {
 
     override fun onResult(text: String) {
         recognizedText = text
-        speechStatus = if (text.isNotBlank()) "Recognized" else "Ready"
-        isListening = false
         rmsLevel = 0f
+
+        if (text.isNotBlank()) {
+            uiMode = ArisUiMode.VERIFYING
+            speechStatus = "Speech recognized. Verify before sending."
+        } else {
+            uiMode = ArisUiMode.READY
+            speechStatus = "I couldn't catch that. Please try speaking again."
+        }
     }
 
     override fun onError(message: String) {
-        speechStatus = message
-        isListening = false
         rmsLevel = 0f
+        if (recognizedText.isNotBlank()) {
+            uiMode = ArisUiMode.VERIFYING
+            speechStatus = "Verify captured speech"
+        } else {
+            uiMode = ArisUiMode.READY
+            speechStatus = message
+        }
     }
 
     override fun onEnd() {
-        if (isListening) {
-            speechStatus = "Processing..."
-            isListening = false
-        } else if (speechStatus == "Stopping...") {
-            speechStatus = if (recognizedText.isNotBlank()) "Recognized" else "Ready"
-        }
         rmsLevel = 0f
+        if (uiMode == ArisUiMode.LISTENING) {
+            if (recognizedText.isNotBlank()) {
+                uiMode = ArisUiMode.VERIFYING
+                speechStatus = "Verify recognized speech"
+            } else {
+                uiMode = ArisUiMode.READY
+                speechStatus = "Ready"
+            }
+        }
     }
 
     override fun onDestroy() {
         speechRecognizer.destroy()
+        arisBrain.close()
         super.onDestroy()
-    }
-}
-
-@androidx.compose.runtime.Composable
-fun ArisScreen(
-    recognizedText: String,
-    speechStatus: String,
-    isListening: Boolean,
-    rmsLevel: Float,
-    onListen: () -> Unit,
-    onStop: () -> Unit,
-    onSpeak: () -> Unit
-) {
-    val animatedScale by animateFloatAsState(
-        targetValue = if (isListening) 1f + (rmsLevel * 0.45f) else 1f,
-        animationSpec = spring(),
-        label = "rmsScale"
-    )
-
-    Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text(text = "ARIS", style = MaterialTheme.typography.headlineMedium)
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Dynamic Voice Reactive Indicator Ring
-        Box(
-            modifier = Modifier
-                .size(100.dp)
-                .scale(animatedScale)
-                .background(
-                    color = if (isListening) {
-                        Color(0xFF00E5FF).copy(alpha = 0.2f + (rmsLevel * 0.6f))
-                    } else {
-                        Color.Transparent
-                    },
-                    shape = CircleShape
-                ),
-            contentAlignment = Alignment.Center
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(60.dp)
-                    .background(
-                        color = if (isListening) Color(0xFF00B0FF) else Color(0xFFE0E0E0),
-                        shape = CircleShape
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = if (isListening) "🎙️" else "💤",
-                    style = MaterialTheme.typography.titleLarge
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Text(text = speechStatus, style = MaterialTheme.typography.bodyMedium)
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Text(text = if (recognizedText.isBlank()) {
-            "Say something..."
-        } else {
-            "\"$recognizedText\""
-        })
-        Spacer(modifier = Modifier.height(24.dp))
-
-        if (isListening) {
-            Button(onClick = onStop) {
-                Text(text = "🔴 Stop")
-            }
-        } else {
-            Button(onClick = onListen) {
-                Text(text = "🎧 Listen")
-            }
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-        Button(onClick = onSpeak) {
-            Text(text = "🤖 Aris")
-        }
     }
 }

@@ -26,6 +26,8 @@ class ArisSpeechRecognizer(
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var speechRecognizer: SpeechRecognizer? = null
+    private var lastPartialResult: String = ""
+    private var isSessionActive = false
 
     private fun initRecognizer(): SpeechRecognizer? {
         try {
@@ -65,10 +67,26 @@ class ArisSpeechRecognizer(
         }
 
         override fun onEndOfSpeech() {
-            mainHandler.post { listener.onEnd() }
+            // Speech input has stopped, but processing/results are still pending.
+            // Do not call onEnd() here so UI does not prematurely discard session.
         }
 
         override fun onError(error: Int) {
+            // If we captured partial results and got NO_MATCH or SPEECH_TIMEOUT,
+            // recover using the last recognized words instead of dropping them.
+            if (isSessionActive && lastPartialResult.isNotBlank() &&
+                (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT)
+            ) {
+                val finalFallback = lastPartialResult
+                isSessionActive = false
+                mainHandler.post {
+                    listener.onResult(finalFallback)
+                    listener.onEnd()
+                }
+                return
+            }
+
+            isSessionActive = false
             val errorMsg = getErrorMessage(error)
             mainHandler.post {
                 listener.onError(errorMsg)
@@ -77,8 +95,20 @@ class ArisSpeechRecognizer(
         }
 
         override fun onResults(results: Bundle?) {
+            isSessionActive = false
             val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-            val text = matches?.firstOrNull()?.trim() ?: ""
+            var text = matches?.firstOrNull()?.trim() ?: ""
+
+            // If final result is empty or missed trailing words captured in partial results,
+            // prefer the more complete transcription
+            if (text.isBlank() && lastPartialResult.isNotBlank()) {
+                text = lastPartialResult
+            } else if (lastPartialResult.isNotBlank() &&
+                lastPartialResult.length > text.length &&
+                lastPartialResult.startsWith(text, ignoreCase = true)
+            ) {
+                text = lastPartialResult
+            }
 
             mainHandler.post {
                 if (text.isNotBlank()) {
@@ -95,7 +125,10 @@ class ArisSpeechRecognizer(
             val text = matches?.firstOrNull()?.trim() ?: ""
 
             if (text.isNotBlank()) {
-                mainHandler.post { listener.onPartialResult(text) }
+                lastPartialResult = text
+                mainHandler.post {
+                    listener.onPartialResult(text)
+                }
             }
         }
 
@@ -107,29 +140,37 @@ class ArisSpeechRecognizer(
     fun startListening() {
         mainHandler.post {
             try {
+                lastPartialResult = ""
+                isSessionActive = true
                 speechRecognizer = initRecognizer()
 
                 val recognizer = speechRecognizer
                 if (recognizer == null) {
+                    isSessionActive = false
                     listener.onError("Speech recognition is not available on this device.")
                     return@post
                 }
+
+                val languageTag = Locale.getDefault().toLanguageTag()
 
                 val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                     putExtra(
                         RecognizerIntent.EXTRA_LANGUAGE_MODEL,
                         RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
                     )
-                    val langTag = Locale.getDefault().toLanguageTag()
-                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, langTag)
-                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, langTag)
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, languageTag)
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, languageTag)
                     putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                    putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+                    putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 3500L)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 3000L)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1500L)
                     putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
                 }
 
                 recognizer.startListening(intent)
             } catch (exception: Exception) {
+                isSessionActive = false
                 listener.onError("Unable to start speech recognition: ${exception.message}")
             }
         }
@@ -147,6 +188,7 @@ class ArisSpeechRecognizer(
 
     fun cancel() {
         mainHandler.post {
+            isSessionActive = false
             try {
                 speechRecognizer?.cancel()
             } catch (e: Exception) {
@@ -158,6 +200,7 @@ class ArisSpeechRecognizer(
 
     fun destroy() {
         mainHandler.post {
+            isSessionActive = false
             try {
                 speechRecognizer?.destroy()
                 speechRecognizer = null

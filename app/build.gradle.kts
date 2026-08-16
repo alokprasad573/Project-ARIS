@@ -27,10 +27,10 @@ android {
         versionName = "1.0"
 
         val apiKey = localProperties.getProperty("ARIS_API_KEY")
-            ?: localProperties.getProperty("JARVIS_API_KEY")
+            ?: localProperties.getProperty("ARIS_API_KEY")
             ?: ""
         val modelTTS = localProperties.getProperty("ARIS_MODEL_TTS")
-            ?: localProperties.getProperty("JARVIS_MODEL_TTS")
+            ?: localProperties.getProperty("ARIS_MODEL_TTS")
             ?: ""
 
 
@@ -59,6 +59,7 @@ android {
 
 dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.google.ai.edge.litertlm:litertlm-android:0.16.0")
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.material3)
