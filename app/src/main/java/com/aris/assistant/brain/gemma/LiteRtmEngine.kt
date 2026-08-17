@@ -19,16 +19,45 @@ class LiteRtmEngine(private val context: Context): GemmaEngine {
     override suspend fun initialize() = withContext(Dispatchers.IO) {
         if (initialized) return@withContext
 
-        val modelPath = prepareModel()
+        var modelPath = prepareModel(forceCopy = false)
 
-        val engineConfig = EngineConfig(
-            modelPath = modelPath,
-            backend = Backend.CPU(),
-            cacheDir = context.cacheDir.absolutePath
-        )
+        val newEngine = try {
+            // 1. Try GPU first (standard for Gemma .litertlm)
+            val gpuConfig = EngineConfig(
+                modelPath = modelPath,
+                backend = Backend.GPU(),
+                cacheDir = context.cacheDir.absolutePath
+            )
+            val eng = Engine(gpuConfig)
+            eng.initialize()
+            eng
+        } catch (gpuError: Exception) {
+            gpuError.printStackTrace()
+            try {
+                // 2. Try CPU fallback
+                val cpuConfig = EngineConfig(
+                    modelPath = modelPath,
+                    backend = Backend.CPU(),
+                    cacheDir = context.cacheDir.absolutePath
+                )
+                val eng = Engine(cpuConfig)
+                eng.initialize()
+                eng
+            } catch (cpuError: Exception) {
+                cpuError.printStackTrace()
+                // 3. Re-copy model if the local file was corrupted or incomplete
+                modelPath = prepareModel(forceCopy = true)
+                val retryConfig = EngineConfig(
+                    modelPath = modelPath,
+                    backend = Backend.GPU(),
+                    cacheDir = context.cacheDir.absolutePath
+                )
+                val eng = Engine(retryConfig)
+                eng.initialize()
+                eng
+            }
+        }
 
-        val newEngine = Engine(engineConfig)
-        newEngine.initialize()
         engine = newEngine
         conversation = newEngine.createConversation()
         initialized = true
@@ -47,16 +76,34 @@ class LiteRtmEngine(private val context: Context): GemmaEngine {
             "LiteRtmEngine is not initialized."
         }
 
-        val currentConversation = conversation ?: error("Conversation is not available.")
-
         val arisPrompt = """
             $ARIS_SYSTEM_PROMPT
             
             User: $prompt
         """.trimIndent()
 
-        val response = currentConversation.sendMessage(arisPrompt)
-        extractText(response.contents.contents)
+        try {
+            val currentConversation = conversation ?: error("Conversation is not available.")
+            val response = currentConversation.sendMessage(arisPrompt)
+            extractText(response.contents.contents)
+        } catch (runtimeError: Exception) {
+            runtimeError.printStackTrace()
+            // If GPU/OpenCL failed during inference, fallback to CPU and retry
+            val modelPath = prepareModel(forceCopy = false)
+            val cpuConfig = EngineConfig(
+                modelPath = modelPath,
+                backend = Backend.CPU(),
+                cacheDir = context.cacheDir.absolutePath
+            )
+            val cpuEngine = Engine(cpuConfig)
+            cpuEngine.initialize()
+            engine?.close()
+            engine = cpuEngine
+            val newConversation = cpuEngine.createConversation()
+            conversation = newConversation
+            val retryResponse = newConversation.sendMessage(arisPrompt)
+            extractText(retryResponse.contents.contents)
+        }
     }
 
     override fun close() {
@@ -80,13 +127,23 @@ class LiteRtmEngine(private val context: Context): GemmaEngine {
             .trim()
     }
 
-    private fun prepareModel(): String {
+    private fun prepareModel(forceCopy: Boolean = false): String {
         val modelFile = File(context.filesDir, MODEL_FILE_NAME)
 
-        if (!modelFile.exists() || modelFile.length() == 0L) {
+        val needsCopy = forceCopy || !modelFile.exists() || modelFile.length() != MODEL_EXPECTED_SIZE
+
+        if (needsCopy) {
+            if (modelFile.exists()) {
+                modelFile.delete()
+            }
             context.assets.open(MODEL_FILE_NAME).use { input ->
                 modelFile.outputStream().use { output ->
-                    input.copyTo(output)
+                    val buffer = ByteArray(128 * 1024)
+                    var bytesRead: Int
+                    while (input.read(buffer).also { bytesRead = it } != -1) {
+                        output.write(buffer, 0, bytesRead)
+                    }
+                    output.flush()
                 }
             }
         }
@@ -95,6 +152,7 @@ class LiteRtmEngine(private val context: Context): GemmaEngine {
 
     companion object {
         private const val MODEL_FILE_NAME = "gemma-4-E2B-it.litertlm"
+        private const val MODEL_EXPECTED_SIZE = 2588147712L
         private const val ARIS_SYSTEM_PROMPT = """
          You are ARIS, a personal voice assistant.
          

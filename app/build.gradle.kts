@@ -55,6 +55,9 @@ android {
         compose = true
         buildConfig = true
     }
+    androidResources {
+        noCompress += listOf("litertlm", "bin", "tflite")
+    }
 }
 
 dependencies {
