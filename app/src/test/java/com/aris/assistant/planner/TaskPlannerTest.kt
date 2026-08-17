@@ -1,5 +1,6 @@
 package com.aris.assistant.planner
 
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -8,103 +9,116 @@ class TaskPlannerTest {
 
     @Test
     fun createPlan_generatesSingleStep() {
-        val planner = TaskPlanner(SimplePlanGenerator())
+        runBlocking {
+            val planner = TaskPlanner(SimplePlanGenerator())
 
-        val plan = planner.createPlan("Open Chrome")
+            val plan = planner.createPlan("Open Chrome")
 
-        assertEquals(1, plan.steps.size)
+            assertEquals(1, plan.steps.size)
 
-        val step = plan.steps[0]
+            val step = plan.steps[0]
 
-        assertEquals("step_1", step.id)
-        assertEquals("Open Chrome", step.description)
-        assertEquals(1, step.order)
-        assertTrue(step.dependencies.isEmpty())
+            assertEquals("step_1", step.id)
+            assertEquals("Open Chrome", step.description)
+            assertEquals(1, step.order)
+            assertTrue(step.dependencies.isEmpty())
+        }
     }
 
     @Test
     fun createPlan_generatesMultipleSteps() {
-        val planner = TaskPlanner(SimplePlanGenerator())
+        runBlocking {
+            val planner = TaskPlanner(SimplePlanGenerator())
 
-        val plan = planner.createPlan(
-            "Open Chrome and search for ARIS"
-        )
+            val plan = planner.createPlan(
+                "Open Chrome and search for ARIS"
+            )
 
-        assertEquals(2, plan.steps.size)
+            assertEquals(2, plan.steps.size)
 
-        val firstStep = plan.steps[0]
-        val secondStep = plan.steps[1]
+            val firstStep = plan.steps[0]
+            val secondStep = plan.steps[1]
 
-        assertEquals("step_1", firstStep.id)
-        assertEquals("Open Chrome", firstStep.description)
-        assertEquals(1, firstStep.order)
-        assertTrue(firstStep.dependencies.isEmpty())
+            assertEquals("step_1", firstStep.id)
+            assertEquals("Open Chrome", firstStep.description)
+            assertEquals(1, firstStep.order)
+            assertTrue(firstStep.dependencies.isEmpty())
 
-        assertEquals("step_2", secondStep.id)
-        assertEquals("search for ARIS", secondStep.description)
-        assertEquals(2, secondStep.order)
-        assertEquals(
-            listOf("step_1"),
-            secondStep.dependencies
-        )
+            assertEquals("step_2", secondStep.id)
+            assertEquals("search for ARIS", secondStep.description)
+            assertEquals(2, secondStep.order)
+            assertEquals(
+                listOf("step_1"),
+                secondStep.dependencies
+            )
+        }
     }
 
     @Test
     fun createPlan_createPlanFromRequest() {
-        val planner = TaskPlanner(SimplePlanGenerator())
+        runBlocking {
+            val planner = TaskPlanner(SimplePlanGenerator())
 
-        val plan = planner.createPlan("Open Chrome")
+            val plan = planner.createPlan("Open Chrome")
 
-        assertEquals("Open Chrome", plan.goal)
-        assertEquals(PlanStatus.CREATED, plan.status)
-        assertEquals(1, plan.steps.size)
-        assertEquals("Open Chrome", plan.steps[0].description)
+            assertEquals("Open Chrome", plan.goal)
+            assertEquals(PlanStatus.CREATED, plan.status)
+            assertEquals(1, plan.steps.size)
+            assertEquals("Open Chrome", plan.steps[0].description)
+        }
     }
 
     @Test
     fun createPlan_trimsRequest() {
-        val planner = TaskPlanner(SimplePlanGenerator())
+        runBlocking {
+            val planner = TaskPlanner(SimplePlanGenerator())
 
-        val plan = planner.createPlan("  Open Chrome ")
-        assertEquals("Open Chrome", plan.goal)
+            val plan = planner.createPlan("  Open Chrome ")
+            assertEquals("Open Chrome", plan.goal)
+        }
     }
 
     @Test(expected = IllegalArgumentException::class)
     fun createPlan_rejectEmptyRequest() {
-        val planner = TaskPlanner(SimplePlanGenerator())
-        planner.createPlan("")
+        runBlocking {
+            val planner = TaskPlanner(SimplePlanGenerator())
+            planner.createPlan("")
+        }
     }
 
     @Test(expected = IllegalArgumentException::class)
     fun createPlan_rejectsBlankRequest() {
-        val planner = TaskPlanner(SimplePlanGenerator())
-        planner.createPlan("  ")
+        runBlocking {
+            val planner = TaskPlanner(SimplePlanGenerator())
+            planner.createPlan("  ")
+        }
     }
 
     @Test
     fun createPlan_usesPlanGenerator() {
+        runBlocking {
+            val generator = object : PlanGenerator {
 
-        val generator = object : PlanGenerator {
-
-            override fun generate(request: String): List<PlanStep> {
-                return listOf(
-                    PlanStep(
-                        id = "custom_step",
-                        description = "Generated by test",
-                        order = 1
+                override suspend fun generate(request: String): List<PlanStep> {
+                    return listOf(
+                        PlanStep(
+                            id = "custom_step",
+                            description = "Generated by test",
+                            order = 1
+                        )
                     )
-                )
+                }
             }
+
+            val planner = TaskPlanner(generator)
+
+            val plan = planner.createPlan("Open Chrome")
+
+            assertEquals(1, plan.steps.size)
+            assertEquals(
+                "Generated by test",
+                plan.steps[0].description
+            )
         }
-
-        val planner = TaskPlanner(generator)
-
-        val plan = planner.createPlan("Test request")
-
-        assertEquals(1, plan.steps.size)
-        assertEquals(
-            "Generated by test",
-            plan.steps[0].description
-        )
     }
 }

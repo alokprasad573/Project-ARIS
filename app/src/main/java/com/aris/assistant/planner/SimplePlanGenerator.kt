@@ -2,7 +2,7 @@ package com.aris.assistant.planner
 
 class SimplePlanGenerator : PlanGenerator {
 
-    override fun generate(request: String): List<PlanStep> {
+    override suspend fun generate(request: String): List<PlanStep> {
         val parts = request
             .split(Regex("\\s+and\\s+|\\s+then\\s+"))
             .map { it.trim() }
