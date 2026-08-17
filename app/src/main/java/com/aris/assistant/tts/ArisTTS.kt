@@ -5,6 +5,7 @@ import android.media.MediaPlayer
 import android.os.Handler
 import android.os.Looper
 import com.aris.assistant.BuildConfig
+import com.aris.assistant.brain.ArisBrain
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -19,14 +20,17 @@ class ArisTTS(private val context: Context) {
     private val model = "s2.1-pro-free"
 
     fun speak(text: String) {
+        val sanitizedText = ArisBrain.filterResponse(text)
+        if (sanitizedText.isBlank()) return
+
         Thread {
             try {
                 val json = JSONObject().apply {
-                    put("text", text)
+                    put("text", sanitizedText)
                     put("reference_id", voiceModelTTS)
                     put("format", "mp3")
                     put("prosody", JSONObject().apply {
-                        put("speed", 1.15)
+                        put("speed", 1.1)
                         put("volume", 5)
                     })
                     put("temperature", 0.70)

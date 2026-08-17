@@ -20,7 +20,8 @@ class ArisBrain(context: Context) {
             gemmaEngine.initialize()
         }
 
-        return gemmaEngine.generate(input)
+        val rawResponse = gemmaEngine.generate(input)
+        return filterResponse(rawResponse)
     }
 
     fun close() {
@@ -29,5 +30,24 @@ class ArisBrain(context: Context) {
 
     fun isReady(): Boolean {
         return gemmaEngine.isReady()
+    }
+
+    companion object {
+        /**
+         * Filters the response so that only alphanumeric words (a-z, A-Z, 0-9) and spaces are retained.
+         * Strips markdown symbols (*, #, _, `, ~, etc.), emojis, and special characters.
+         */
+        fun filterResponse(text: String): String {
+            if (text.isBlank()) return ""
+
+            // 1. Remove markdown links: [text](url) -> text
+            var cleaned = text.replace(Regex("\\[(.*?)\\]\\(.*?\\)"), "$1")
+
+            // 2. Keep only letters (a-z, A-Z), numbers (0-9), and whitespace
+            cleaned = cleaned.replace(Regex("[^a-zA-Z0-9\\s]"), " ")
+
+            // 3. Normalize multiple spaces and trim
+            return cleaned.replace(Regex("\\s+"), " ").trim()
+        }
     }
 }
