@@ -4,5 +4,4 @@
 *.tflite
 *.onnx
 /app/src/main/assets/*.litertlm
-/app/src/main/assets/s2/*
-/app/src/main/cpp/*
+
