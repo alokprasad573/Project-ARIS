@@ -8,6 +8,17 @@
     <!-- M1: Speech-to-Text -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- For precise, exact current location (using GPS) -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+
+    <!-- For approximate location (using Wi-Fi and cell towers) -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <!-- App Storage Permissions -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+
     <!-- Package visibility for Android 11+ Speech Recognition -->
     <queries>
         <intent>
@@ -17,6 +28,7 @@
 
     <application
         android:allowBackup="true"
+        android:debuggable="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
@@ -38,7 +50,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:label="@string/app_name"
+            android:label="ARIS"
             android:theme="@style/Theme.ARIS"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>

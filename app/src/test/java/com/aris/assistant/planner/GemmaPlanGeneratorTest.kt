@@ -42,6 +42,14 @@ class GemmaPlanGeneratorTest {
         assertFalse(engine.lastPrompt.isBlank())
     }
 
+    @Test(expected = IllegalArgumentException::class)
+    fun generate_rejectsBlankRequest() = runBlocking {
+        val engine = FakeGemmaEngine("{}")
+        val generator = GemmaPlanGenerator(engine)
+        generator.generate("   ")
+        Unit
+    }
+
     private class FakeGemmaEngine(
         private val response: String
     ) : GemmaEngine {

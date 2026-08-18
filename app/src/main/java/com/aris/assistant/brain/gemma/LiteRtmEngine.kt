@@ -1,6 +1,7 @@
 package com.aris.assistant.brain.gemma
 
 import android.content.Context
+import android.util.Log
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Conversation
@@ -8,10 +9,11 @@ import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.File
+import kotlin.system.measureTimeMillis
 
-class LiteRtmEngine(private val context: Context): GemmaEngine {
+class LiteRtmEngine(private val context: Context) : GemmaEngine {
 
+    private val TAG = "LiteRtmEngine"
     private var engine: Engine? = null
     private var conversation: Conversation? = null
     private var initialized = false
@@ -19,65 +21,77 @@ class LiteRtmEngine(private val context: Context): GemmaEngine {
     override suspend fun initialize() = withContext(Dispatchers.IO) {
         if (initialized) return@withContext
 
-        var modelPath = prepareModel(forceCopy = false)
+        val modelPath = getPersistentModelPath()
+            ?: throw IllegalStateException("Model not found. Please download first.")
 
-        println("ARIS GEMMA: Initializing CPU backend...")
-        println("ARIS GEMMA: Model = $modelPath")
+        Log.d(TAG, "Starting LiteRT-LM initialization for model: $modelPath")
 
-        val cpuConfig = EngineConfig(
-            modelPath = modelPath,
-            backend = Backend.CPU(),
-            cacheDir = context.cacheDir.absolutePath
-        )
-        val newEngine = Engine(cpuConfig)
-
-        newEngine.initialize()
+        val newEngine = try {
+            Log.d(TAG, "Attempting GPU initialization with shader cache: ${context.cacheDir.absolutePath}")
+            var engineInstance: Engine
+            val gpuDuration = measureTimeMillis {
+                val gpuConfig = EngineConfig(
+                    modelPath = modelPath,
+                    backend = Backend.GPU(),
+                    cacheDir = context.cacheDir.absolutePath
+                )
+                engineInstance = Engine(gpuConfig)
+                engineInstance.initialize()
+            }
+            Log.d(TAG, "GPU initialization succeeded in ${gpuDuration}ms")
+            engineInstance
+        } catch (e: Throwable) {
+            Log.w(TAG, "GPU initialization failed (${e.message}). Falling back to CPU backend...", e)
+            var engineInstance: Engine
+            val cpuDuration = measureTimeMillis {
+                val cpuConfig = EngineConfig(
+                    modelPath = modelPath,
+                    backend = Backend.CPU(),
+                    cacheDir = context.cacheDir.absolutePath
+                )
+                engineInstance = Engine(cpuConfig)
+                engineInstance.initialize()
+            }
+            Log.d(TAG, "CPU initialization succeeded in ${cpuDuration}ms")
+            engineInstance
+        }
 
         engine = newEngine
         conversation = newEngine.createConversation()
         initialized = true
+        Log.d(TAG, "ARIS Neural Engine is fully booted and conversation is ready.")
+    }
 
-        println("ARIS GEMMA: CPU backend initialized successfully")
+    private fun getPersistentModelPath(): String? {
+        return ModelDownloader.getPersistentModelPath(context)
     }
 
     override suspend fun generate(prompt: String): String = withContext(Dispatchers.IO) {
-        require(prompt.isNotBlank()) {
-            "Prompt cannot be blank."
-        }
+        require(prompt.isNotBlank()) { "Prompt cannot be blank." }
+        if (!initialized) { initialize() }
+        check(initialized) { "LiteRtmEngine is not initialized." }
 
-        if (!initialized) {
-            initialize()
-        }
-
-        check(initialized) {
-            "LiteRtmEngine is not initialized."
-        }
-
-        val currentConversation = conversation?: error("Conversation is not avaliable")
+        val currentConversation = conversation ?: error("Conversation is not available")
         val arisPrompt = """
             $ARIS_SYSTEM_PROMPT
-            
             User: $prompt
         """.trimIndent()
 
-        println("ARIS GEMMA: Sending prompt...")
-
         val response = currentConversation.sendMessage(arisPrompt)
-        val result = extractText(response.contents.contents)
-        println("ARIS GEMMA: Response generated")
-
-        result
+        extractText(response.contents.contents)
     }
 
     override fun close() {
-        conversation?.close()
+        try {
+            conversation?.close()
+        } catch (_: Exception) {}
         conversation = null
 
-        engine?.close()
+        try {
+            engine?.close()
+        } catch (_: Exception) {}
         engine = null
-
         initialized = false
-        println("ARIS GEMMA: Engine closed")
     }
 
     override fun isReady(): Boolean {
@@ -91,35 +105,7 @@ class LiteRtmEngine(private val context: Context): GemmaEngine {
             .trim()
     }
 
-    private fun prepareModel(forceCopy: Boolean = false): String {
-        val modelFile = File(context.filesDir, MODEL_FILE_NAME)
-
-        val needsCopy = forceCopy || !modelFile.exists() || modelFile.length() != MODEL_EXPECTED_SIZE
-
-        if (needsCopy) {
-
-            println("ARIS GEMMA: Copying model...")
-            if (modelFile.exists()) {
-                modelFile.delete()
-            }
-            context.assets.open(MODEL_FILE_NAME).use { input ->
-                modelFile.outputStream().use { output ->
-                    val buffer = ByteArray(128 * 1024)
-                    var bytesRead: Int
-                    while (input.read(buffer).also { bytesRead = it } != -1) {
-                        output.write(buffer, 0, bytesRead)
-                    }
-                    output.flush()
-                }
-            }
-            println("ARIS GEMMA: Model copied successfully")
-        }
-        return modelFile.absolutePath
-    }
-
     companion object {
-        private const val MODEL_FILE_NAME = "gemma-4-E2B-it.litertlm"
-        private const val MODEL_EXPECTED_SIZE = 2588147712L
         private const val ARIS_SYSTEM_PROMPT = """
 You are ARIS, a personal voice assistant.
 
