@@ -7,200 +7,310 @@ import android.os.Looper
 import android.util.Log
 import com.aris.assistant.BuildConfig
 import com.aris.assistant.brain.ArisBrain
+import kotlinx.coroutines.*
+import okhttp3.Call
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.File
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
+import java.io.IOException
+import java.util.concurrent.TimeUnit
 
-class ArisTTS(context: Context) {
-
-    private val appContext = context.applicationContext
-    private val client = OkHttpClient()
-    private val executor: ExecutorService = Executors.newSingleThreadExecutor()
-    private val mainHandler = Handler(Looper.getMainLooper())
+class ArisTTS(
+    private val context: Context,
+    private val client: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .writeTimeout(10, TimeUnit.SECONDS)
+        .build()
+) {
+    interface Listener {
+        fun onPlaybackStarted() {}
+        fun onPlaybackCompleted() {}
+        fun onError(message: String) {}
+    }
 
     private val apiKey = BuildConfig.ARIS_API_KEY
     private val voiceModelTTS = BuildConfig.ARIS_MODEL_TTS
     private val model = "s2.1-pro-free"
+    private val TAG = "ARIS TTS"
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val ttsScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     @Volatile
-    private var closed = false
+    private var currentJob: Job? = null
 
+    @Volatile
+    private var activeCall: Call? = null
+
+    private val playerLock = Any()
     private var mediaPlayer: MediaPlayer? = null
+    private var activeTempFile: File? = null
 
-    fun speak(text: String) {
-        if (closed) return
+    var listener: Listener? = null
 
-        val sanitizedText = ArisBrain.filterResponse(text)
-        if (sanitizedText.isBlank()) return
+    companion object {
+        const val MAX_RETRIES = 2
+        const val INITIAL_BACKOFF_MS = 500L
+        const val TEMP_FILE_NAME = "aris_response.mp3"
+    }
 
-        executor.execute {
-            if (closed) return@execute
+    fun speak(text: String?) {
+        val rawText = text ?: ""
+        val sanitizedText = if (rawText.isBlank()) " " else ArisBrain.filterResponse(rawText)
 
-            var audioFile: File? = null
+        if (sanitizedText.isBlank()) {
+            Log.d(TAG, "ARIS TTS: Empty text after sanitization, skipping.")
+            return
+        }
 
+        // Cancel previous pending network request and stop existing playback
+        stop()
+
+        Log.d(TAG, "ARIS TTS: Request started for: \"$sanitizedText\"")
+
+        currentJob = ttsScope.launch {
+            val audioBytes = fetchAudioWithRetry(sanitizedText)
+
+            if (!isActive) {
+                Log.d(TAG, "ARIS TTS: Job cancelled after fetch, aborting playback.")
+                return@launch
+            }
+
+            if (audioBytes != null && audioBytes.isNotEmpty()) {
+                saveAndPlay(audioBytes)
+            } else {
+                Log.w(TAG, "ARIS TTS: Failed to obtain audio after retries or fallback.")
+                notifyError("TTS synthesis failed or network unavailable")
+            }
+        }
+    }
+
+    private suspend fun fetchAudioWithRetry(text: String): ByteArray? {
+        var attempt = 0
+        var currentBackoff = INITIAL_BACKOFF_MS
+
+        while (attempt <= MAX_RETRIES && currentCoroutineContext().isActive) {
+            attempt++
             try {
-                val json = JSONObject().apply {
-                    put("text", sanitizedText)
-                    put("reference_id", voiceModelTTS)
-                    put("format", "mp3")
-                    put("prosody", JSONObject().apply {
-                        put("speed", 1.1)
-                        put("volume", 5)
-                    })
-                    put("temperature", 0.70)
-                    put("top_p", 0.70)
-                    put("normalize", true)
+                Log.d(TAG, "ARIS TTS: Fetch attempt $attempt / ${MAX_RETRIES + 1}")
+                val bytes = executeTtsRequest(text)
+                if (bytes != null) {
+                    return bytes
                 }
-
-                val requestBody = json
-                    .toString()
-                    .toRequestBody("application/json".toMediaType())
-
-                val request = Request.Builder()
-                    .url("https://api.fish.audio/v1/tts")
-                    .addHeader("Authorization", "Bearer $apiKey")
-                    .addHeader("Content-Type", "application/json")
-                    .addHeader("model", model)
-                    .post(requestBody)
-                    .build()
-
-                client.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        val error = response.body?.string()
-                        Log.e(TAG, "Fish Audio request failed: ${response.code} $error")
-                        return@use
-                    }
-
-                    val audioBytes = response.body?.bytes()
-                    if (audioBytes.isNullOrEmpty()) {
-                        Log.e(TAG, "Fish Audio returned an empty audio response")
-                        return@use
-                    }
-
-                    audioFile = File.createTempFile(
-                        "aris_tts_",
-                        ".mp3",
-                        appContext.cacheDir
-                    )
-                    audioFile!!.writeBytes(audioBytes)
-
-                    if (closed) {
-                        audioFile?.delete()
-                        audioFile = null
-                        return@use
-                    }
-
-                    playAudio(audioFile!!)
-                    audioFile = null
+            } catch (e: IOException) {
+                Log.w(TAG, "ARIS TTS: Network exception on attempt $attempt: ${e.message}")
+                if (attempt > MAX_RETRIES || !currentCoroutineContext().isActive) {
+                    return null
                 }
+                delay(currentBackoff)
+                currentBackoff *= 2
             } catch (e: Exception) {
-                audioFile?.delete()
+                Log.e(TAG, "ARIS TTS: Non-retryable error on attempt $attempt: ${e.message}", e)
+                return null
+            }
+        }
+        return null
+    }
 
-                if (!closed) {
-                    Log.e(TAG, "TTS generation failed", e)
+    @Throws(IOException::class)
+    private fun executeTtsRequest(text: String): ByteArray? {
+        val json = JSONObject().apply {
+            put("text", text)
+            put("reference_id", voiceModelTTS)
+            put("format", "mp3")
+            put("prosody", JSONObject().apply {
+                put("speed", 1.1)
+                put("volume", 5)
+            })
+            put("temperature", 0.70)
+            put("top_p", 0.70)
+            put("normalize", true)
+        }
+
+        val requestBody = json.toString().toRequestBody("application/json".toMediaType())
+        val request = Request.Builder()
+            .url("https://api.fish.audio/v1/tts")
+            .addHeader("Authorization", "Bearer $apiKey")
+            .addHeader("Content-Type", "application/json")
+            .addHeader("model", model)
+            .post(requestBody)
+            .build()
+
+        val call = client.newCall(request)
+        activeCall = call
+
+        try {
+            call.execute().use { response ->
+                Log.d(TAG, "ARIS TTS: HTTP response = ${response.code}")
+                if (response.isSuccessful) {
+                    val bytes = response.body?.bytes()
+                    if (bytes != null && bytes.isNotEmpty()) {
+                        Log.d(TAG, "ARIS TTS: Audio bytes received = ${bytes.size}")
+                        return bytes
+                    }
+                } else {
+                    val errorBody = response.body?.string()
+                    Log.w(TAG, "ARIS TTS HTTP ERROR: ${response.code} $errorBody")
+                    // If server error (5xx) or rate limit (429), throw IOException to trigger retry
+                    if (response.code in 500..599 || response.code == 429) {
+                        throw IOException("Server/RateLimit error: HTTP ${response.code}")
+                    }
                 }
+            }
+        } finally {
+            if (activeCall == call) {
+                activeCall = null
+            }
+        }
+        return null
+    }
+
+    private fun saveAndPlay(audioBytes: ByteArray) {
+        synchronized(playerLock) {
+            try {
+                val tempFile = File(context.cacheDir, TEMP_FILE_NAME)
+                if (tempFile.exists()) {
+                    tempFile.delete()
+                }
+                tempFile.writeBytes(audioBytes)
+                activeTempFile = tempFile
+                Log.d(TAG, "ARIS TTS: MP3 saved = ${tempFile.absolutePath} (${audioBytes.size} bytes)")
+                playAudio(tempFile)
+            } catch (e: Exception) {
+                Log.e(TAG, "ARIS TTS: File write / save error: ${e.message}", e)
+                notifyError("Failed to save audio cache: ${e.message}")
             }
         }
     }
 
     private fun playAudio(file: File) {
         mainHandler.post {
-            if (closed) {
-                file.delete()
-                return@post
-            }
+            synchronized(playerLock) {
+                stopPlaybackInternal()
 
-            stopCurrentPlayback()
+                try {
+                    val player = MediaPlayer()
+                    mediaPlayer = player
 
-            val player = MediaPlayer()
-            mediaPlayer = player
-
-            try {
-                player.setDataSource(file.absolutePath)
-
-                player.setOnPreparedListener { preparedPlayer ->
-                    if (closed) {
-                        if (mediaPlayer === preparedPlayer) {
-                            mediaPlayer = null
+                    player.setDataSource(file.absolutePath)
+                    player.setOnPreparedListener { mp ->
+                        synchronized(playerLock) {
+                            if (mediaPlayer == mp) {
+                                Log.d(TAG, "ARIS TTS: Playback started")
+                                mp.start()
+                                notifyStarted()
+                            } else {
+                                mp.release()
+                            }
                         }
-                        preparedPlayer.release()
-                        file.delete()
-                        return@setOnPreparedListener
                     }
 
-                    preparedPlayer.start()
-                }
-
-                player.setOnCompletionListener { completedPlayer ->
-                    if (mediaPlayer === completedPlayer) {
-                        mediaPlayer = null
+                    player.setOnCompletionListener { mp ->
+                        synchronized(playerLock) {
+                            Log.d(TAG, "ARIS TTS: Playback completed")
+                            if (mediaPlayer == mp) {
+                                stopPlaybackInternal()
+                            }
+                            cleanupTempFile()
+                            notifyCompleted()
+                        }
                     }
-                    completedPlayer.release()
-                    file.delete()
-                }
 
-                player.setOnErrorListener { errorPlayer, _, _ ->
-                    if (mediaPlayer === errorPlayer) {
-                        mediaPlayer = null
+                    player.setOnErrorListener { mp, what, extra ->
+                        synchronized(playerLock) {
+                            Log.w(TAG, "ARIS TTS: Playback error ($what, $extra)")
+                            if (mediaPlayer == mp) {
+                                stopPlaybackInternal()
+                            }
+                            cleanupTempFile()
+                            notifyError("MediaPlayer error: $what, $extra")
+                            true
+                        }
                     }
-                    errorPlayer.release()
-                    file.delete()
-                    true
-                }
 
-                player.prepareAsync()
-            } catch (e: Exception) {
-                if (mediaPlayer === player) {
-                    mediaPlayer = null
+                    player.prepareAsync()
+                } catch (e: Exception) {
+                    Log.e(TAG, "ARIS TTS EXCEPTION (Playback): ${e.message}", e)
+                    stopPlaybackInternal()
+                    cleanupTempFile()
+                    notifyError("Playback initialization failed: ${e.message}")
                 }
-                player.release()
-                file.delete()
-                Log.e(TAG, "Unable to prepare TTS audio", e)
             }
         }
     }
 
-    private fun stopCurrentPlayback() {
-        val player = mediaPlayer ?: return
-        mediaPlayer = null
+    fun stop() {
+        // Cancel active coroutine job
+        currentJob?.cancel()
+        currentJob = null
 
+        // Cancel active OkHttp call if any
         try {
-            if (player.isPlaying) {
-                player.stop()
+            activeCall?.cancel()
+            activeCall = null
+        } catch (_: Exception) {}
+
+        // Stop media playback and cleanup
+        mainHandler.post {
+            synchronized(playerLock) {
+                stopPlaybackInternal()
+                cleanupTempFile()
             }
-        } catch (_: Exception) {
         }
+    }
 
-        try {
-            player.reset()
-        } catch (_: Exception) {
+    private fun stopPlaybackInternal() {
+        mediaPlayer?.let { player ->
+            try {
+                if (player.isPlaying) {
+                    player.stop()
+                }
+            } catch (_: Exception) {}
+            try {
+                player.reset()
+            } catch (_: Exception) {}
+            try {
+                player.release()
+            } catch (_: Exception) {}
+            Log.d(TAG, "ARIS TTS: MediaPlayer stopped and released")
         }
+        mediaPlayer = null
+    }
 
-        try {
-            player.release()
-        } catch (_: Exception) {
+    private fun cleanupTempFile() {
+        activeTempFile?.let { file ->
+            try {
+                if (file.exists()) {
+                    file.delete()
+                    Log.d(TAG, "ARIS TTS: Temp audio file deleted")
+                }
+            } catch (_: Exception) {}
         }
+        activeTempFile = null
+    }
+
+    fun release() {
+        stop()
+        ttsScope.cancel()
     }
 
     fun close() {
-        if (closed) return
-        closed = true
-
-        executor.shutdownNow()
-        client.dispatcher.cancelAll()
-        client.connectionPool.evictAll()
-
-        mainHandler.post {
-            stopCurrentPlayback()
-        }
+        release()
     }
 
-    companion object {
-        private const val TAG = "ArisTTS"
+    private fun notifyStarted() {
+        mainHandler.post { listener?.onPlaybackStarted() }
+    }
+
+    private fun notifyCompleted() {
+        mainHandler.post { listener?.onPlaybackCompleted() }
+    }
+
+    private fun notifyError(message: String) {
+        mainHandler.post { listener?.onError(message) }
     }
 }

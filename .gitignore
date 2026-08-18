@@ -19,4 +19,5 @@ local.properties
 *.bin
 *.tflite
 *.onnx
-app/src/main/assets/
+*.zip
+app/src/main/assets/*.litertlm

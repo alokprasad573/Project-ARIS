@@ -4,8 +4,8 @@ import android.content.Context
 import com.aris.assistant.brain.gemma.GemmaEngine
 import com.aris.assistant.brain.gemma.LiteRtmEngine
 
-class ArisBrain(context: Context) {
-    private val gemmaEngine: GemmaEngine = LiteRtmEngine(context.applicationContext)
+class ArisBrain(private val gemmaEngine: GemmaEngine) {
+    constructor(context: Context) : this(LiteRtmEngine(context.applicationContext))
 
     suspend fun initialize() {
         gemmaEngine.initialize()

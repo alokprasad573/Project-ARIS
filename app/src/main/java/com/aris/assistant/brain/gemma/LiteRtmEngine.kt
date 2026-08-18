@@ -12,8 +12,6 @@ import kotlinx.coroutines.withContext
 import kotlin.system.measureTimeMillis
 
 class LiteRtmEngine(private val context: Context) : GemmaEngine {
-
-    private val TAG = "LiteRtmEngine"
     private var engine: Engine? = null
     private var conversation: Conversation? = null
     private var initialized = false
@@ -26,40 +24,69 @@ class LiteRtmEngine(private val context: Context) : GemmaEngine {
 
         Log.d(TAG, "Starting LiteRT-LM initialization for model: $modelPath")
 
-        val newEngine = try {
+        val newEngine = initializeEngineWithFallback(modelPath)
+
+        try {
+            val newConversation = newEngine.createConversation()
+
+            engine = newEngine
+            conversation = newConversation
+            initialized = true
+
+            Log.d(
+                TAG,
+                "ARIS Neural Engine is fully booted and conversation is ready."
+            )
+        } catch (e: Exception) {
+            try {
+                newEngine.close()
+            } catch (_: Exception) {
+            }
+
+            throw e
+        }
+    }
+
+    private fun initializeEngineWithFallback(modelPath: String): Engine {
+        var gpuEngine: Engine? = null
+        try {
             Log.d(TAG, "Attempting GPU initialization with shader cache: ${context.cacheDir.absolutePath}")
-            var engineInstance: Engine
             val gpuDuration = measureTimeMillis {
-                val gpuConfig = EngineConfig(
-                    modelPath = modelPath,
-                    backend = Backend.GPU(),
-                    cacheDir = context.cacheDir.absolutePath
-                )
-                engineInstance = Engine(gpuConfig)
-                engineInstance.initialize()
+                gpuEngine = Engine(
+                    EngineConfig(
+                        modelPath = modelPath,
+                        backend = Backend.GPU(),
+                        cacheDir = context.cacheDir.absolutePath
+                    )
+                ).apply {
+                    initialize()
+                }
             }
             Log.d(TAG, "GPU initialization succeeded in ${gpuDuration}ms")
-            engineInstance
+            return gpuEngine!!
         } catch (e: Throwable) {
-            Log.w(TAG, "GPU initialization failed (${e.message}). Falling back to CPU backend...", e)
-            var engineInstance: Engine
-            val cpuDuration = measureTimeMillis {
-                val cpuConfig = EngineConfig(
+            Log.w(TAG, "GPU initialization failed (${e.message}). Cleaning up GPU context...", e)
+            try {
+                gpuEngine?.close()
+            } catch (_: Exception) {}
+        }
+
+        // CPU Fallback logic
+        Log.d(TAG, "Falling back to CPU backend...")
+        val cpuEngine: Engine
+        val cpuDuration = measureTimeMillis {
+            cpuEngine = Engine(
+                EngineConfig(
                     modelPath = modelPath,
                     backend = Backend.CPU(),
                     cacheDir = context.cacheDir.absolutePath
                 )
-                engineInstance = Engine(cpuConfig)
-                engineInstance.initialize()
+            ).apply {
+                initialize()
             }
-            Log.d(TAG, "CPU initialization succeeded in ${cpuDuration}ms")
-            engineInstance
         }
-
-        engine = newEngine
-        conversation = newEngine.createConversation()
-        initialized = true
-        Log.d(TAG, "ARIS Neural Engine is fully booted and conversation is ready.")
+        Log.d(TAG, "CPU initialization succeeded in ${cpuDuration}ms")
+        return cpuEngine
     }
 
     private fun getPersistentModelPath(): String? {
@@ -67,14 +94,15 @@ class LiteRtmEngine(private val context: Context) : GemmaEngine {
     }
 
     override suspend fun generate(prompt: String): String = withContext(Dispatchers.IO) {
-        require(prompt.isNotBlank()) { "Prompt cannot be blank." }
+        val safePrompt = if (prompt.isBlank()) "Hello" else prompt
         if (!initialized) { initialize() }
         check(initialized) { "LiteRtmEngine is not initialized." }
 
         val currentConversation = conversation ?: error("Conversation is not available")
         val arisPrompt = """
             $ARIS_SYSTEM_PROMPT
-            User: $prompt
+            User: $safePrompt
+            ARIS:
         """.trimIndent()
 
         val response = currentConversation.sendMessage(arisPrompt)
@@ -106,6 +134,7 @@ class LiteRtmEngine(private val context: Context) : GemmaEngine {
     }
 
     companion object {
+        private const val TAG = "LiteRtmEngine"
         private const val ARIS_SYSTEM_PROMPT = """
 You are ARIS, a personal voice assistant.
 
@@ -120,7 +149,7 @@ IDENTITY:
 LANGUAGE & OUTPUT RULES:
 - Only use letters (a-z, A-Z) and numbers (0-9).
 - Do NOT use markdown symbols (such as *, #, _, `, ~), bullet points, emojis, or special characters.
-- Use natural Hinglish (using only English/Latin letters) or English.
+- Respond only in Hindi + English.
 - Keep answers clear, direct, and conversational so they are ready to be spoken aloud.
 - Do not repeat yourself or include unnecessary disclaimers.
 
@@ -128,6 +157,6 @@ PERSONALITY:
 - Be intelligent, calm, helpful and concise.
 - Behave like a capable personal voice assistant.
 - Give direct answers without unnecessary explanations.
-         """
+"""
     }
 }

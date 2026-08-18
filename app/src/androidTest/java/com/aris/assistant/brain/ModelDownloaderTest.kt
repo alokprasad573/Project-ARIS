@@ -1,9 +1,9 @@
 package com.aris.assistant.brain
 
+import com.aris.assistant.brain.gemma.ModelDownloader
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import com.aris.assistant.brain.gemma.ModelDownloader
-import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -13,28 +13,48 @@ import java.io.File
 class ModelDownloaderTest {
 
     @Test
-    fun modelDownloader_verifiesTargetFolderAccess() {
-        val context = InstrumentationRegistry.getInstrumentation().targetContext
-        val externalDir = context.getExternalFilesDir(null)
+    fun modelDirectory_isAvailable() {
+        val context = InstrumentationRegistry
+            .getInstrumentation()
+            .targetContext
 
-        assertNotNull("External files directory should be available", externalDir)
-        assertTrue("External directory must exist or be creatable", externalDir!!.exists() || externalDir.mkdirs())
+        val directory = ModelDownloader.getModelDirectory(context)
 
-        val targetFile = File(externalDir, ModelDownloader.MODEL_FILE_NAME)
-        assertTrue("Parent directory must be writable", targetFile.parentFile?.canWrite() == true)
+        assertTrue(
+            "Model directory should exist",
+            directory.exists()
+        )
+
+        assertTrue(
+            "Model directory should be a directory",
+            directory.isDirectory
+        )
     }
 
     @Test
-    fun modelDownloader_checksConstantsAndPresenceMethod() {
-        val context = InstrumentationRegistry.getInstrumentation().targetContext
-        assertTrue(ModelDownloader.MODEL_FILE_NAME.isNotBlank())
-        assertTrue(ModelDownloader.MIN_VALID_MODEL_SIZE > 0)
-        
-        // Method should execute without throwing exception
-        val isPresent = ModelDownloader.isModelPresent(context)
-        val path = ModelDownloader.getPersistentModelPath(context)
-        if (isPresent) {
-            assertNotNull(path)
+    fun expectedModelSize_isCorrect() {
+        assertEquals(
+            2588147712L,
+            ModelDownloader.EXPECTED_TOTAL_BYTES
+        )
+    }
+
+    @Test
+    fun modelFile_isValidWhenExactSizeMatches() {
+        val context = InstrumentationRegistry
+            .getInstrumentation()
+            .targetContext
+
+        val modelFile = File(
+            ModelDownloader.getModelDirectory(context),
+            ModelDownloader.MODEL_FILE_NAME
+        )
+
+        if (modelFile.exists()) {
+            assertEquals(
+                ModelDownloader.EXPECTED_TOTAL_BYTES,
+                modelFile.length()
+            )
         }
     }
 }

@@ -23,13 +23,13 @@ class ModelDownloader(private val context: Context) {
         onStatusChange: (status: String) -> Unit = {},
         onProgress: (progressPercent: Int, downloadedMB: String, totalMB: String) -> Unit
     ): Boolean = withContext(Dispatchers.IO) {
-        val destinationFile = File(context.getExternalFilesDir(null), MODEL_FILE_NAME)
+        val destinationFile = File(getModelDirectory(context), MODEL_FILE_NAME)
 
         // Ensure directory exists
         destinationFile.parentFile?.mkdirs()
 
         // If already completely downloaded, return immediately
-        if (destinationFile.exists() && destinationFile.length() >= MIN_VALID_MODEL_SIZE) {
+        if (isValidModelFile(destinationFile)) {
             val totalMBStr = String.format("%.1f MB", destinationFile.length() / (1024.0 * 1024.0))
             withContext(Dispatchers.Main) {
                 onProgress(100, totalMBStr, totalMBStr)
@@ -49,7 +49,7 @@ class ModelDownloader(private val context: Context) {
             val existingBytes = if (destinationFile.exists()) destinationFile.length() else 0L
 
             // Check if download completed in a previous attempt
-            if (existingBytes >= MIN_VALID_MODEL_SIZE) {
+            if (isValidModelFile(destinationFile)) {
                 val totalMBStr = String.format("%.1f MB", existingBytes / (1024.0 * 1024.0))
                 withContext(Dispatchers.Main) {
                     onProgress(100, totalMBStr, totalMBStr)
@@ -92,7 +92,6 @@ class ModelDownloader(private val context: Context) {
                             setRequestProperty("Range", "bytes=$existingBytes-")
                         }
                     }
-
                     connection.connect()
 
                     val responseCode = connection.responseCode
@@ -120,9 +119,16 @@ class ModelDownloader(private val context: Context) {
                 val isPartial = responseCode == HttpURLConnection.HTTP_PARTIAL // 206
                 val isOk = responseCode == HttpURLConnection.HTTP_OK // 200
 
+                if (isPartial && existingBytes > 0) {
+                    val contentRange = connection?.getHeaderField("Content-Range")
+                    if (contentRange == null || !contentRange.startsWith("bytes $existingBytes-")) {
+                        throw IOException("Content-Range mismatch or missing. Requested starts at $existingBytes, but got: $contentRange")
+                    }
+                }
+
                 if (responseCode == 416) {
                     // Range Not Satisfiable: file might already be complete or corrupted
-                    if (existingBytes >= MIN_VALID_MODEL_SIZE) {
+                    if (isValidModelFile(destinationFile)) {
                         return@withContext true
                     } else {
                         // Reset and retry from 0
@@ -164,6 +170,7 @@ class ModelDownloader(private val context: Context) {
 
                 while (inputStream.read(data).also { count = it } != -1) {
                     if (!coroutineContext.isActive) {
+                        Log.d(TAG, "Download cancelled during data read loop.")
                         outputStream.flush()
                         outputStream.close()
                         inputStream.close()
@@ -195,41 +202,39 @@ class ModelDownloader(private val context: Context) {
                     }
                 }
 
-                outputStream.flush()
-                outputStream.close()
-                outputStream = null
                 inputStream.close()
                 connection?.disconnect()
                 connection = null
 
-                // Reset backoff on successful connection/transfer chunk
+                if (!isValidModelFile(destinationFile)) {
+                    throw IOException("Download finished but file is incomplete or size mismatch. " +
+                            "Expected: $EXPECTED_TOTAL_BYTES, Actual: ${destinationFile.length()}")
+                }
+
+                // Reset backoff ONLY on successful completion of a valid file
                 retryCount = 0
                 backoffMs = 2000L
 
-                if (destinationFile.length() >= MIN_VALID_MODEL_SIZE) {
-                    val finalMBStr = String.format("%.1f MB", destinationFile.length() / (1024.0 * 1024.0))
-                    withContext(Dispatchers.Main) {
-                        onProgress(100, finalMBStr, finalMBStr)
-                    }
-                    Log.d(TAG, "Model download complete! Size: ${destinationFile.length()} bytes")
-                    return@withContext true
+                val finalMBStr = String.format("%.1f MB", destinationFile.length() / (1024.0 * 1024.0))
+                withContext(Dispatchers.Main) {
+                    onProgress(100, finalMBStr, finalMBStr)
                 }
+                Log.d(TAG, "Model download complete! Size: ${destinationFile.length()} bytes")
+                return@withContext true
 
             } catch (e: Exception) {
-                Log.w(TAG, "Download interrupted (${e.javaClass.simpleName}: ${e.message}). Will retry...", e)
-
-                try {
-                    outputStream?.flush()
-                    outputStream?.close()
-                } catch (_: Exception) {}
-
-                try {
-                    connection?.disconnect()
-                } catch (_: Exception) {}
-
                 if (!coroutineContext.isActive) {
+                    Log.d(TAG, "Download cancelled during exception handling: ${e.message}")
+                    try {
+                        outputStream?.flush()
+                        outputStream?.close()
+                    } catch (_: Exception) {}
+                    try {
+                        connection?.disconnect()
+                    } catch (_: Exception) {}
                     return@withContext false
                 }
+                Log.w(TAG, "Download interrupted (${e.javaClass.simpleName}: ${e.message}). Will retry...", e)
 
                 retryCount++
                 val currentSizeMB = if (destinationFile.exists()) {
@@ -259,20 +264,41 @@ class ModelDownloader(private val context: Context) {
 
     companion object {
         const val MODEL_FILE_NAME = "gemma-4-E2B-it.litertlm"
-        const val MIN_VALID_MODEL_SIZE = 2000000000L // 2 GB minimum threshold
         const val EXPECTED_TOTAL_BYTES = 2588147712L // ~2.58 GB exact size
+
+        fun getModelDirectory(context: Context): File {
+            return context.getExternalFilesDir(null) ?: context.filesDir
+        }
+
+        private fun isValidModelFile(file: File): Boolean {
+            if (!file.exists() || !file.isFile) return false
+            if (file.length() != EXPECTED_TOTAL_BYTES) return false
+
+            return try {
+                file.inputStream().use { input ->
+                    val header = ByteArray(16)
+                    val bytesRead = input.read(header)
+
+                    bytesRead == header.size &&
+                            header.any { it.toInt() != 0 }
+                }
+            } catch (e: Exception) {
+                Log.w("ModelDownloader", "Model integrity check failed: ${e.message}")
+                false
+            }
+        }
 
         /**
          * Checks whether the model is already downloaded and present in persistent storage.
          * Returns the absolute path if available, or null otherwise.
          */
         fun getPersistentModelPath(context: Context): String? {
-            val externalFile = File(context.getExternalFilesDir(null), MODEL_FILE_NAME)
-            if (externalFile.exists() && externalFile.length() >= MIN_VALID_MODEL_SIZE) {
+            val externalFile = File(getModelDirectory(context), MODEL_FILE_NAME)
+            if (isValidModelFile(externalFile)) {
                 return externalFile.absolutePath
             }
             val internalFile = File(context.filesDir, MODEL_FILE_NAME)
-            if (internalFile.exists() && internalFile.length() >= MIN_VALID_MODEL_SIZE) {
+            if (isValidModelFile(internalFile)) {
                 return internalFile.absolutePath
             }
             return null

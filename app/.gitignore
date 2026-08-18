@@ -3,5 +3,5 @@
 *.bin
 *.tflite
 *.onnx
-/app/src/main/assets/*.litertlm
-
+*.zip
+/src/main/assets/*.litertlm

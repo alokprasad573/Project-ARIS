@@ -1,6 +1,7 @@
 package com.aris.assistant.planner
 
 import com.aris.assistant.brain.gemma.GemmaEngine
+import org.json.JSONArray
 import org.json.JSONObject
 
 class GemmaPlanGenerator(
@@ -9,32 +10,24 @@ class GemmaPlanGenerator(
 
     override suspend fun generate(request: String): List<PlanStep> {
         require(request.isNotBlank()) {
-            "Planning request cannot be empty"
+            "Request cannot be blank."
         }
 
-        val prompt = buildPrompt(request.trim())
+        val prompt = """
+            You are ARIS task planner.
 
-        val response = gemmaEngine.generate(prompt)
+            Convert the user's request into a structured execution plan.
 
-        return parsePlan(response)
-    }
+            Return ONLY valid JSON.
+            Do not use markdown.
+            Do not wrap the JSON in code fences.
 
-    private fun buildPrompt(request: String): String {
-        return """
-            You are the ARIS task planning system.
-
-            Convert the user's request into an ordered list of executable steps.
-
-            User request:
-            $request
-
-            Return ONLY valid JSON using this exact structure:
-
+            Required format:
             {
               "steps": [
                 {
                   "id": "step_1",
-                  "description": "first step",
+                  "description": "Open Chrome",
                   "order": 1,
                   "dependencies": []
                 }
@@ -42,46 +35,47 @@ class GemmaPlanGenerator(
             }
 
             Rules:
-            - Every step must have a unique ID.
-            - IDs must be step_1, step_2, step_3, etc.
-            - order starts at 1.
-            - dependencies must contain IDs of previous steps.
-            - Do not include markdown.
-            - Do not include explanations.
-            - Return valid JSON only.
+            - steps must be ordered
+            - id must be unique
+            - order starts at 1
+            - dependencies must contain existing step IDs
+            - do not invent unnecessary steps
+
+            User request:
+            $request
         """.trimIndent()
+
+        val response = gemmaEngine.generate(prompt)
+
+        return parsePlan(response)
     }
 
     private fun parsePlan(response: String): List<PlanStep> {
-        val json = JSONObject(response)
-        val stepsJson = json.getJSONArray("steps")
+        val root = JSONObject(response)
+        val steps = root.getJSONArray("steps")
 
-        val steps = mutableListOf<PlanStep>()
+        return buildList {
+            for (index in 0 until steps.length()) {
+                val item = steps.getJSONObject(index)
 
-        for (index in 0 until stepsJson.length()) {
-            val stepJson = stepsJson.getJSONObject(index)
+                val dependenciesJson =
+                    item.optJSONArray("dependencies") ?: JSONArray()
 
-            val dependencies = mutableListOf<String>()
-            val dependenciesJson = stepJson.optJSONArray("dependencies")
-
-            if (dependenciesJson != null) {
-                for (dependencyIndex in 0 until dependenciesJson.length()) {
-                    dependencies.add(
-                        dependenciesJson.getString(dependencyIndex)
-                    )
+                val dependencies = buildList {
+                    for (i in 0 until dependenciesJson.length()) {
+                        add(dependenciesJson.getString(i))
+                    }
                 }
-            }
 
-            steps.add(
-                PlanStep(
-                    id = stepJson.getString("id"),
-                    description = stepJson.getString("description"),
-                    order = stepJson.getInt("order"),
-                    dependencies = dependencies
+                add(
+                    PlanStep(
+                        id = item.getString("id"),
+                        description = item.getString("description"),
+                        order = item.getInt("order"),
+                        dependencies = dependencies
+                    )
                 )
-            )
+            }
         }
-
-        return steps
     }
 }
